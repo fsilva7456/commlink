@@ -1,15 +1,11 @@
-import { createClient } from "@/lib/supabase/server";
 import Link from "next/link";
 import { NewRunButton } from "./NewRunButton";
+import { CompactProgress } from "@/components/LiveProgress";
+import { getRuns } from "@/lib/data";
 import type { Run } from "@/types";
 
 export default async function RunsPage() {
-  const supabase = await createClient();
-
-  const { data: runs } = await supabase
-    .from("runs")
-    .select("*")
-    .order("created_at", { ascending: false });
+  const runs = await getRuns();
 
   return (
     <div className="p-8">
@@ -21,7 +17,7 @@ export default async function RunsPage() {
         <NewRunButton />
       </div>
 
-      {runs && runs.length > 0 ? (
+      {runs.length > 0 ? (
         <div className="bg-zinc-900 rounded-lg border border-zinc-800 overflow-hidden">
           <table className="w-full">
             <thead>
@@ -43,6 +39,7 @@ export default async function RunsPage() {
                   </td>
                   <td className="px-4 py-3">
                     <StatusBadge status={run.status} />
+                    <CompactProgress run={run} />
                   </td>
                   <td className="px-4 py-3 text-sm text-zinc-400">
                     {new Date(run.created_at).toLocaleDateString()}

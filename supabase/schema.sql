@@ -21,6 +21,13 @@ create table runs (
   name text not null,
   status text not null default 'pending' check (status in ('pending', 'collecting', 'training', 'evaluating', 'completed', 'failed')),
   config jsonb not null default '{}',
+  -- Progress tracking fields
+  current_step text,                        -- 'collecting', 'training', 'evaluating'
+  progress float default 0,                 -- 0.0 to 1.0
+  total_steps integer default 3,            -- Number of steps (collect, train, evaluate)
+  started_at timestamp with time zone,      -- When processing started
+  eta_seconds integer,                      -- Estimated seconds until completion
+  -- Timestamps
   created_at timestamp with time zone default now(),
   updated_at timestamp with time zone default now()
 );

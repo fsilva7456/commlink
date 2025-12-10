@@ -1,14 +1,9 @@
-import { createClient } from "@/lib/supabase/server";
 import { NewScenarioButton } from "./NewScenarioButton";
+import { getScenarios } from "@/lib/data";
 import type { Scenario, Waypoint } from "@/types";
 
 export default async function ScenariosPage() {
-  const supabase = await createClient();
-
-  const { data: scenarios } = await supabase
-    .from("scenarios")
-    .select("*")
-    .order("created_at", { ascending: false });
+  const scenarios = await getScenarios();
 
   return (
     <div className="p-8">
@@ -20,7 +15,7 @@ export default async function ScenariosPage() {
         <NewScenarioButton />
       </div>
 
-      {scenarios && scenarios.length > 0 ? (
+      {scenarios.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {scenarios.map((scenario: Scenario) => (
             <ScenarioCard key={scenario.id} scenario={scenario} />

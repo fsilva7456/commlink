@@ -4,13 +4,19 @@ Training Script for World Model
 
 Loads episode data, trains the world model, and logs metrics to Supabase.
 Designed to run locally with GPU (RTX 5070) or on cloud (RunPod).
+
+Features:
+- Progress tracking with ETA
+- Real-time updates to Supabase
+- Console progress bars
 """
 
 import argparse
 import json
 import os
+import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -26,6 +32,43 @@ try:
     from supabase import create_client, Client
 except ImportError:
     create_client = None
+
+
+def format_time(seconds: float) -> str:
+    """Format seconds into human readable string."""
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    elif seconds < 3600:
+        mins = seconds // 60
+        secs = seconds % 60
+        return f"{mins:.0f}m {secs:.0f}s"
+    else:
+        hours = seconds // 3600
+        mins = (seconds % 3600) // 60
+        return f"{hours:.0f}h {mins:.0f}m"
+
+
+def print_progress_bar(
+    current: int,
+    total: int,
+    prefix: str = "",
+    suffix: str = "",
+    length: int = 40,
+    fill: str = "━",
+    empty: str = "─",
+):
+    """Print a progress bar to console."""
+    percent = current / total if total > 0 else 0
+    filled_length = int(length * percent)
+    bar = fill * filled_length + empty * (length - filled_length)
+    percent_str = f"{percent * 100:5.1f}%"
+
+    # Clear line and print
+    sys.stdout.write(f"\r{prefix} {bar} {percent_str} {suffix}")
+    sys.stdout.flush()
+
+    if current >= total:
+        print()  # New line when complete
 
 
 class EpisodeDataset(Dataset):
@@ -144,7 +187,12 @@ class DummyDataset(Dataset):
 
 
 class Trainer:
-    """Handles training loop and metric logging."""
+    """Handles training loop and metric logging with progress tracking."""
+
+    # Training is step 2 of 3 (collecting=1, training=2, evaluating=3)
+    STEP_COLLECTING = "collecting"
+    STEP_TRAINING = "training"
+    STEP_EVALUATING = "evaluating"
 
     def __init__(
         self,
@@ -157,6 +205,8 @@ class Trainer:
         self.model = model.to(device)
         self.device = device
         self.run_id = run_id
+        self.start_time: Optional[float] = None
+        self.epoch_times: list[float] = []
 
         # Supabase client
         self.supabase: Optional[Client] = None
@@ -180,6 +230,23 @@ class Trainer:
                 "status": status
             }).eq("id", self.run_id).execute()
 
+    def update_progress(
+        self,
+        current_step: str,
+        progress: float,
+        eta_seconds: Optional[int] = None,
+    ):
+        """Update run progress in Supabase."""
+        if self.supabase and self.run_id:
+            update_data = {
+                "current_step": current_step,
+                "progress": float(progress),
+            }
+            if eta_seconds is not None:
+                update_data["eta_seconds"] = eta_seconds
+
+            self.supabase.table("runs").update(update_data).eq("id", self.run_id).execute()
+
     def save_checkpoint(self, path: str, epoch: int, optimizer: optim.Optimizer):
         """Save model checkpoint."""
         torch.save({
@@ -188,6 +255,52 @@ class Trainer:
             "optimizer_state_dict": optimizer.state_dict(),
         }, path)
 
+    def estimate_eta(self, current_epoch: int, total_epochs: int) -> Optional[int]:
+        """Estimate time remaining based on epoch times."""
+        if len(self.epoch_times) < 2:
+            return None
+
+        # Use rolling average of last 5 epochs for stability
+        recent_times = self.epoch_times[-5:]
+        avg_epoch_time = sum(recent_times) / len(recent_times)
+
+        remaining_epochs = total_epochs - current_epoch
+        eta_seconds = int(avg_epoch_time * remaining_epochs)
+
+        return eta_seconds
+
+    def print_status(
+        self,
+        epoch: int,
+        total_epochs: int,
+        loss: float,
+        mse: float,
+        best_mse: float,
+        eta_seconds: Optional[int],
+    ):
+        """Print formatted status to console."""
+        progress = epoch / total_epochs
+
+        # Build status line
+        elapsed = time.time() - self.start_time if self.start_time else 0
+        elapsed_str = format_time(elapsed)
+
+        if eta_seconds:
+            eta_str = format_time(eta_seconds)
+            completion_time = datetime.now() + timedelta(seconds=eta_seconds)
+            completion_str = completion_time.strftime("%I:%M %p")
+        else:
+            eta_str = "calculating..."
+            completion_str = "--:--"
+
+        # Clear previous lines and print status block
+        print(f"\n{'─' * 60}")
+        print(f"  Epoch {epoch}/{total_epochs}")
+        print_progress_bar(epoch, total_epochs, prefix="  ", length=50)
+        print(f"\n  Loss: {loss:.6f}  |  MSE: {mse:.6f}  |  Best: {best_mse:.6f}")
+        print(f"  Elapsed: {elapsed_str}  |  ETA: {eta_str}  |  Done at: {completion_str}")
+        print(f"{'─' * 60}")
+
     def train(
         self,
         train_loader: DataLoader,
@@ -195,22 +308,41 @@ class Trainer:
         lr: float = 1e-4,
         checkpoint_dir: str = "./checkpoints",
     ):
-        """Main training loop."""
+        """Main training loop with progress tracking."""
         os.makedirs(checkpoint_dir, exist_ok=True)
 
         optimizer = optim.AdamW(self.model.parameters(), lr=lr)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
 
+        # Initialize progress tracking
+        self.start_time = time.time()
+        self.epoch_times = []
+
+        # Update status to training
         self.update_run_status("training")
+        if self.supabase and self.run_id:
+            self.supabase.table("runs").update({
+                "started_at": datetime.utcnow().isoformat(),
+                "current_step": self.STEP_TRAINING,
+                "total_steps": 3,
+            }).eq("id", self.run_id).execute()
+
         best_mse = float("inf")
 
+        print(f"\n{'=' * 60}")
+        print(f"  TRAINING STARTED")
+        print(f"  Epochs: {epochs} | Batches/epoch: {len(train_loader)}")
+        print(f"{'=' * 60}\n")
+
         for epoch in range(epochs):
+            epoch_start = time.time()
             self.model.train()
             epoch_loss = 0.0
             epoch_mse = 0.0
-            num_batches = 0
+            num_batches = len(train_loader)
 
-            for states, actions, targets in train_loader:
+            # Batch progress
+            for batch_idx, (states, actions, targets) in enumerate(train_loader):
                 states = states.to(self.device)
                 actions = actions.to(self.device)
                 targets = targets.to(self.device)
@@ -229,33 +361,61 @@ class Trainer:
 
                 epoch_loss += loss.item()
                 epoch_mse += loss.item()
-                num_batches += 1
+
+                # Print batch progress (overwrite line)
+                batch_progress = (batch_idx + 1) / num_batches
+                sys.stdout.write(f"\r  Epoch {epoch + 1}/{epochs} - Batch {batch_idx + 1}/{num_batches} ({batch_progress * 100:.0f}%)")
+                sys.stdout.flush()
 
             scheduler.step()
+
+            # Track epoch time
+            epoch_time = time.time() - epoch_start
+            self.epoch_times.append(epoch_time)
 
             # Average metrics
             avg_loss = epoch_loss / max(num_batches, 1)
             avg_mse = epoch_mse / max(num_batches, 1)
 
-            # Log to console
-            print(f"Epoch {epoch + 1}/{epochs} | Loss: {avg_loss:.6f} | MSE: {avg_mse:.6f}")
+            # Calculate progress and ETA
+            progress = (epoch + 1) / epochs
+            eta_seconds = self.estimate_eta(epoch + 1, epochs)
 
-            # Log to Supabase
+            # Update Supabase progress
+            self.update_progress(self.STEP_TRAINING, progress, eta_seconds)
+
+            # Log metrics to Supabase
             self.log_metrics(epoch + 1, avg_loss, avg_mse)
 
             # Save best checkpoint
-            if avg_mse < best_mse:
+            is_best = avg_mse < best_mse
+            if is_best:
                 best_mse = avg_mse
                 checkpoint_path = os.path.join(checkpoint_dir, "best_model.pt")
                 self.save_checkpoint(checkpoint_path, epoch, optimizer)
-                print(f"  -> New best model saved (MSE: {best_mse:.6f})")
+
+            # Print status
+            self.print_status(epoch + 1, epochs, avg_loss, avg_mse, best_mse, eta_seconds)
+
+            if is_best:
+                print(f"  ** New best model saved! **\n")
 
             # Regular checkpoint every 10 epochs
             if (epoch + 1) % 10 == 0:
                 checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch + 1}.pt")
                 self.save_checkpoint(checkpoint_path, epoch, optimizer)
 
+        # Training complete
+        total_time = time.time() - self.start_time
+        print(f"\n{'=' * 60}")
+        print(f"  TRAINING COMPLETE")
+        print(f"  Total time: {format_time(total_time)}")
+        print(f"  Best MSE: {best_mse:.6f}")
+        print(f"{'=' * 60}\n")
+
         self.update_run_status("evaluating")
+        self.update_progress(self.STEP_EVALUATING, 1.0, 0)
+
         return best_mse
 
 
