@@ -367,6 +367,86 @@ Behavior:
 | `return_home` | 4 m/s | Direct to start |
 | `hover` | 0 | Hold position |
 
+#### 4.1.1 Control Timing Architecture
+
+**Loop Rates:**
+
+| Loop | Rate | Period | Location |
+|------|------|--------|----------|
+| **LLM Planner** | 0.1 Hz | 10s (+ events) | Cloud API (Claude/Gemini) |
+| **Mid-Level Planner** | 1 Hz | 1s | Local/Cloud CPU |
+| **Perception (YOLO)** | 30 Hz | 33ms | Local/Cloud GPU |
+| **MPC Controller** | 50 Hz | 20ms | Local/Cloud CPU |
+
+**Deployment Modes:**
+
+| Mode | Compute Location | Drone Requirements |
+|------|------------------|-------------------|
+| **Simulation** | Local machine | N/A (PX4 SITL) |
+| **Real Testing** | Cloud | WiFi/LTE + MAVLink receiver |
+| **Future Production** | On-drone | Edge GPU (Jetson) |
+
+**Models & Training:**
+
+| Model | Trained? | Training Data |
+|-------|----------|---------------|
+| **LLM Planner** | No (prompt-based) | N/A |
+| **Vision (YOLO)** | Yes | Sim camera frames |
+| **World Model** | Yes | Sim state/action pairs |
+
+**LLM Replan Triggers:**
+
+| Trigger | Description |
+|---------|-------------|
+| Timer | 10 seconds since last plan |
+| Target detected | Was searching, now see target |
+| Target lost | Was tracking, lost for >3s |
+| Subgoal complete | Finished approach arc |
+| Critical state | Battery <20%, out of bounds |
+
+**Fallback Behavior (LLM Failure):**
+
+```
+LLM API fails/times out
+      │
+      ▼
+Continue current subgoal (60 seconds)
+      │
+      ▼
+Transition to return_home
+      │
+      ▼
+Land at start position
+```
+
+**Nested Control Loop:**
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  LLM PLANNER (async, 0.1 Hz + events)                        │
+│  Claude/Gemini API | Fallback: continue 60s → return_home   │
+│                                                              │
+│  Input:  objective, world_state, constraints                 │
+│  Output: subgoal (search|approach|track|return_home|hover)   │
+│                                                              │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │  MID-LEVEL PLANNER (1 Hz)                              │  │
+│  │                                                        │  │
+│  │  Input:  subgoal, target_position, drone_state         │  │
+│  │  Output: waypoint (x, y, z, yaw)                       │  │
+│  │                                                        │  │
+│  │  ┌──────────────────────────────────────────────────┐  │  │
+│  │  │  MPC CONTROLLER (50 Hz)                          │  │  │
+│  │  │                                                  │  │  │
+│  │  │  Input:  waypoint, drone_state, camera_frame     │  │  │
+│  │  │  Output: action (throttle, roll, pitch, yaw)     │  │  │
+│  │  └──────────────────────────────────────────────────┘  │  │
+│  └────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────┘
+
+PARALLEL: Perception (30 Hz) feeds world_state to all layers
+```
+
 #### 4.2 MPC Controller (World Model Integration)
 
 **Files to create:**
