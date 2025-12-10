@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  # PX4 SITL Simulator
+  px4-sitl:
+    image: px4io/px4-dev-simulation-focal:latest
+    container_name: px4-sitl
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+      - PX4_HOME=/root/PX4-Autopilot
+      - PX4_SIM_MODEL=iris
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - px4-data:/root/PX4-Autopilot
+    ports:
+      - "14540:14540/udp"  # MAVSDK
+      - "14550:14550/udp"  # QGroundControl
+      - "18570:18570/udp"  # Gazebo
+    networks:
+      - sim-network
+    command: >
+      bash -c "
+        cd /root/PX4-Autopilot &&
+        make px4_sitl gazebo
+      "
+    privileged: true
+
+  # MAVLink Agent (data collection)
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mavlink-agent
+    environment:
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
+      - PX4_CONNECTION=udp://:14540
+      - RUN_ID=${RUN_ID:-}
+      - SCENARIO_ID=${SCENARIO_ID:-}
+    volumes:
+      - ./data:/app/data
+      - .:/app
+    networks:
+      - sim-network
+    depends_on:
+      - px4-sitl
+    command: python3 agent.py
+
+networks:
+  sim-network:
+    driver: bridge
+
+volumes:
+  px4-data:

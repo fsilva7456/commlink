@@ -1,0 +1,12 @@
+# PyTorch (CUDA 12.x for RTX 5070)
+torch>=2.2.0
+torchvision>=0.17.0
+
+# Data Processing
+numpy>=1.24.0
+
+# Supabase Integration
+supabase>=2.0.0
+
+# Utilities
+tqdm>=4.66.0
