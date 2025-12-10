@@ -1,24 +1,12 @@
-import { createClient } from "@/lib/supabase/server";
 import Link from "next/link";
+import { getModels } from "@/lib/data";
 import type { Model, Run } from "@/types";
 
 export default async function ModelsPage() {
-  const supabase = await createClient();
-
-  // Get models with their associated runs
-  const { data: models } = await supabase
-    .from("models")
-    .select(`
-      *,
-      runs (
-        id,
-        name
-      )
-    `)
-    .order("created_at", { ascending: false });
+  const models = await getModels();
 
   // Find best model by eval_score
-  const bestModel = models?.reduce((best: Model | null, current: Model) => {
+  const bestModel = models.reduce((best: Model | null, current: Model) => {
     if (current.eval_score === null) return best;
     if (best === null || best.eval_score === null) return current;
     return current.eval_score < best.eval_score ? current : best;
@@ -57,7 +45,7 @@ export default async function ModelsPage() {
         </div>
       )}
 
-      {models && models.length > 0 ? (
+      {models.length > 0 ? (
         <div className="bg-zinc-900 rounded-lg border border-zinc-800 overflow-hidden">
           <table className="w-full">
             <thead>

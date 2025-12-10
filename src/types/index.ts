@@ -7,6 +7,13 @@ export interface Run {
   name: string;
   status: RunStatus;
   config: RunConfig;
+  // Progress tracking
+  current_step?: string | null;
+  progress?: number;
+  total_steps?: number;
+  started_at?: string | null;
+  eta_seconds?: number | null;
+  // Timestamps
   created_at: string;
   updated_at: string;
 }

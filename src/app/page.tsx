@@ -1,31 +1,15 @@
-import { createClient } from "@/lib/supabase/server";
 import Link from "next/link";
-import type { Run, Scenario, Model } from "@/types";
+import { getDashboardStats, getRecentRuns } from "@/lib/data";
+import type { Run } from "@/types";
 
 export default async function Dashboard() {
-  const supabase = await createClient();
-
-  // Fetch stats
-  const [runsResult, scenariosResult, modelsResult, metricsResult] = await Promise.all([
-    supabase.from("runs").select("id, status"),
-    supabase.from("scenarios").select("id"),
-    supabase.from("models").select("id, eval_score"),
-    supabase.from("metrics").select("trajectory_mse").order("trajectory_mse", { ascending: true }).limit(1),
+  // Fetch data (works in both demo and production mode)
+  const [stats, recentRuns] = await Promise.all([
+    getDashboardStats(),
+    getRecentRuns(5),
   ]);
 
-  const runs = runsResult.data || [];
-  const scenarios = scenariosResult.data || [];
-  const models = modelsResult.data || [];
-  const bestMse = metricsResult.data?.[0]?.trajectory_mse;
-
-  const activeRuns = runs.filter((r) => ["collecting", "training", "evaluating"].includes(r.status)).length;
-
-  // Fetch recent runs
-  const { data: recentRuns } = await supabase
-    .from("runs")
-    .select("*")
-    .order("created_at", { ascending: false })
-    .limit(5);
+  const { totalRuns, activeRuns, totalModels, bestMse } = stats;
 
   return (
     <div className="p-8">
@@ -38,7 +22,7 @@ export default async function Dashboard() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <StatCard
           label="Total Runs"
-          value={runs.length}
+          value={totalRuns}
           icon={<RunIcon />}
         />
         <StatCard
@@ -49,12 +33,12 @@ export default async function Dashboard() {
         />
         <StatCard
           label="Models"
-          value={models.length}
+          value={totalModels}
           icon={<ModelIcon />}
         />
         <StatCard
           label="Best MSE"
-          value={bestMse !== undefined ? bestMse.toFixed(4) : "N/A"}
+          value={bestMse !== null ? bestMse.toFixed(4) : "N/A"}
           icon={<MetricIcon />}
         />
       </div>
@@ -71,7 +55,7 @@ export default async function Dashboard() {
           </Link>
         </div>
 
-        {recentRuns && recentRuns.length > 0 ? (
+        {recentRuns.length > 0 ? (
           <div className="divide-y divide-zinc-800">
             {recentRuns.map((run: Run) => (
               <Link

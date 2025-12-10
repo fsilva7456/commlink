@@ -1,8 +1,9 @@
-import { createClient } from "@/lib/supabase/server";
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { RunActions } from "./RunActions";
 import { MetricsChart } from "./MetricsChart";
+import { LiveProgress } from "@/components/LiveProgress";
+import { getRun, getRunMetrics, getRunEpisodes } from "@/lib/data";
 import type { Run, Metric, Episode } from "@/types";
 
 export default async function RunDetailPage({
@@ -11,33 +12,17 @@ export default async function RunDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const supabase = await createClient();
 
-  const { data: run } = await supabase
-    .from("runs")
-    .select("*")
-    .eq("id", id)
-    .single();
+  const run = await getRun(id);
 
   if (!run) {
     notFound();
   }
 
-  const [metricsResult, episodesResult] = await Promise.all([
-    supabase
-      .from("metrics")
-      .select("*")
-      .eq("run_id", id)
-      .order("epoch", { ascending: true }),
-    supabase
-      .from("episodes")
-      .select("*")
-      .eq("run_id", id)
-      .order("created_at", { ascending: false }),
+  const [metrics, episodes] = await Promise.all([
+    getRunMetrics(id),
+    getRunEpisodes(id),
   ]);
-
-  const metrics = metricsResult.data || [];
-  const episodes = episodesResult.data || [];
 
   return (
     <div className="p-8">
@@ -61,6 +46,13 @@ export default async function RunDetailPage({
         </div>
         <RunActions run={run} />
       </div>
+
+      {/* Live Progress (for active runs) */}
+      {["pending", "collecting", "training", "evaluating"].includes(run.status) && (
+        <div className="mb-8">
+          <LiveProgress run={run} initialMetrics={metrics} />
+        </div>
+      )}
 
       {/* Config Section */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
