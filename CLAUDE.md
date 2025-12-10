@@ -2,13 +2,41 @@
 
 ## Purpose
 
-Commlink is a **control panel for training, testing, and evaluating AI world models** for autonomous drone navigation. The system enables a closed-loop workflow:
+Commlink is a **platform for training autonomous drones using a two-level AI control system**:
+- **High-Level Planner (LLM)**: Understands natural language objectives, reasons about the world, and generates plans
+- **Low-Level Controller (World Model)**: Predicts physics and executes precise flight maneuvers
 
-1. **Simulate** - Run a drone in a simulated environment (PX4 SITL + Gazebo)
-2. **Collect** - Gather synthetic training data (camera images, state vectors, actions)
-3. **Train** - Train a world model to predict future trajectories
-4. **Evaluate** - Measure prediction accuracy against ground truth
-5. **Iterate** - Retrain with more data and measure improvement
+## Target Workflow
+
+1. **Define Scenario** - Natural language objective ("Locate and track the red sphere") + exit criteria
+2. **Run Variants** - Execute multiple simulation runs with randomized parameters
+3. **Collect Data** - Capture video, telemetry, LLM decisions, and controller actions
+4. **Train Models** - Improve vision, planning, and control models from collected data
+5. **Deploy & Iterate** - Test new models, compare performance, repeat
+
+### Two-Level AI Control
+
+```
+Natural Language Objective
+         │
+         ▼
+┌─────────────────────────┐
+│   HIGH-LEVEL PLANNER    │  ← LLM (Claude/GPT/Llama)
+│   (LLM)                 │
+│                         │
+│   "Locate red sphere"   │
+│   → ["search", "track"] │
+└───────────┬─────────────┘
+            │ subgoals
+            ▼
+┌─────────────────────────┐
+│   LOW-LEVEL CONTROLLER  │  ← World Model (DreamerV3)
+│   (World Model + MPC)   │
+│                         │
+│   subgoal + state       │
+│   → motor commands      │
+└─────────────────────────┘
+```
 
 ### What is a World Model?
 
@@ -17,7 +45,12 @@ A world model is a neural network that learns to predict how the environment wil
 - **Input**: Current drone state (position, velocity, orientation) + camera image + action
 - **Output**: Predicted future trajectory (N-step position predictions)
 - **Architecture**: DreamerV3-inspired latent dynamics model
-- **Use Case**: Planning, model-predictive control, sim-to-real transfer
+- **Use Case**: Model Predictive Control (MPC) for precise flight maneuvers
+
+## Documentation
+
+- **[Architecture](docs/ARCHITECTURE.md)** - Full system design with diagrams
+- **[Implementation Plan](docs/IMPLEMENTATION_PLAN.md)** - Detailed roadmap to target architecture
 
 ## System Architecture
 
@@ -104,29 +137,42 @@ commlink/
 
 ## Implementation Status
 
-### Phase 1: Dashboard + DB ✅ COMPLETE
-- [x] TypeScript types for all data models
-- [x] Supabase database schema
-- [x] Dashboard with stats and recent runs
-- [x] Runs list and detail pages with metrics chart
-- [x] Scenarios page with waypoint visualization
-- [x] Models page with best model highlight
-- [x] Dark theme UI with sidebar navigation
+### Phase 1: Foundation ✅ COMPLETE
+- [x] Dashboard UI (Next.js, TypeScript, Tailwind)
+- [x] Database schema (Supabase)
+- [x] World model architecture (DreamerV3-style)
+- [x] Progress tracking with ETA
+- [x] Demo mode for easy onboarding
 
-### Phase 2: Simulation + Training ✅ COMPLETE
-- [x] Docker setup for PX4 SITL + Gazebo
-- [x] MAVLink agent (MAVSDK) for drone control
-- [x] Data collection pipeline
-- [x] PyTorch world model (DreamerV3-style)
-- [x] Training script with Supabase metric logging
-- [x] Local runner script for end-to-end workflow
-- [x] API endpoint to trigger training
+### Phase 2: Perception 🔲 PLANNED
+- [ ] Camera integration in Gazebo
+- [ ] Object detection (YOLOv8)
+- [ ] Video recording
+- [ ] Detection logging
 
-### Phase 3: Evaluation (PLANNED)
-- [ ] Model evaluation pipeline
-- [ ] Trajectory prediction visualization
-- [ ] Model comparison dashboard
-- [ ] Real-time metric updates via Supabase Realtime
+### Phase 3: LLM Planner 🔲 PLANNED
+- [ ] Natural language objectives
+- [ ] LLM integration (Claude API)
+- [ ] Decision logging
+- [ ] Subgoal generation
+
+### Phase 4: Autonomous Control 🔲 PLANNED
+- [ ] Mid-level planner (subgoal → waypoint)
+- [ ] MPC controller (world model integration)
+- [ ] Exit condition handling
+- [ ] Variant generation
+
+### Phase 5: Training Pipeline 🔲 PLANNED
+- [ ] Vision model training
+- [ ] LLM fine-tuning pipeline
+- [ ] Enhanced world model training
+
+### Phase 6: Analytics 🔲 PLANNED
+- [ ] Performance analytics dashboard
+- [ ] A/B testing framework
+- [ ] Episode replay viewer
+
+See [IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) for detailed breakdown.
 
 ## Quick Start
 
