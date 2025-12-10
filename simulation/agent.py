@@ -4,11 +4,19 @@ MAVLink Agent for Drone Control and Data Collection
 
 This agent connects to PX4 SITL via MAVLink, executes flight scenarios,
 and collects training data (state, actions, images).
+
+Usage:
+    # With environment variables:
+    RUN_ID=<uuid> SCENARIO_ID=<uuid> python3 agent.py
+
+    # Or standalone with default scenario:
+    python3 agent.py
 """
 
 import asyncio
 import json
 import os
+import sys
 import time
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -29,6 +37,13 @@ try:
 except ImportError:
     print("Supabase not installed. Install with: pip install supabase")
     create_client = None
+
+
+def print_status(message: str, status: str = "info"):
+    """Print formatted status message."""
+    icons = {"info": "ℹ", "success": "✓", "error": "✗", "progress": "⏳"}
+    icon = icons.get(status, "•")
+    print(f"  {icon} {message}")
 
 
 @dataclass
@@ -295,46 +310,137 @@ class MAVLinkAgent:
         print(f"Uploaded episode metadata to Supabase")
 
 
+def fetch_scenario(supabase: Client, scenario_id: str) -> Optional[dict]:
+    """Fetch scenario from Supabase."""
+    try:
+        result = supabase.table("scenarios").select("*").eq("id", scenario_id).single().execute()
+        return result.data
+    except Exception as e:
+        print_status(f"Failed to fetch scenario: {e}", "error")
+        return None
+
+
+def update_run_status(supabase: Client, run_id: str, status: str, progress: float = 0, current_step: str = "collecting"):
+    """Update run status in Supabase."""
+    try:
+        supabase.table("runs").update({
+            "status": status,
+            "progress": progress,
+            "current_step": current_step,
+            "started_at": datetime.utcnow().isoformat() if status == "collecting" else None,
+        }).eq("id", run_id).execute()
+    except Exception as e:
+        print_status(f"Failed to update run status: {e}", "error")
+
+
 async def main():
     """Main entry point."""
+    print("")
+    print("=" * 60)
+    print("  COMMLINK DATA COLLECTION AGENT")
+    print("=" * 60)
+    print("")
+
     connection = os.getenv("PX4_CONNECTION", "udp://:14540")
     run_id = os.getenv("RUN_ID")
     scenario_id = os.getenv("SCENARIO_ID")
 
+    print_status(f"PX4 Connection: {connection}", "info")
+    print_status(f"Run ID: {run_id or 'Not set (standalone mode)'}", "info")
+    print_status(f"Scenario ID: {scenario_id or 'Not set (using default)'}", "info")
+    print("")
+
     agent = MAVLinkAgent(connection)
 
+    # Default scenario
+    waypoints = [
+        {"x": 0, "y": 0, "z": 10},
+        {"x": 10, "y": 0, "z": 10},
+        {"x": 10, "y": 10, "z": 10},
+        {"x": 0, "y": 10, "z": 10},
+        {"x": 0, "y": 0, "z": 10},
+    ]
+    duration = 120
+
+    # Fetch scenario from Supabase if configured
+    if agent.supabase and scenario_id:
+        print_status("Fetching scenario from Supabase...", "progress")
+        scenario = fetch_scenario(agent.supabase, scenario_id)
+        if scenario:
+            waypoints = scenario.get("waypoints", waypoints)
+            duration = scenario.get("duration", duration)
+            print_status(f"Loaded scenario: {scenario.get('name', 'Unknown')}", "success")
+            print_status(f"  Waypoints: {len(waypoints)}, Duration: {duration}s", "info")
+        else:
+            print_status("Using default scenario", "info")
+
+    # Update run status to collecting
+    if agent.supabase and run_id:
+        update_run_status(agent.supabase, run_id, "collecting", 0, "collecting")
+
     try:
+        print("")
+        print_status("Connecting to drone...", "progress")
         await agent.connect()
+        print_status("Connected!", "success")
 
         # Start state update task
         asyncio.create_task(agent._update_state())
 
         # Arm and takeoff
+        print("")
+        print_status("Arming and taking off...", "progress")
         await agent.arm_and_takeoff(10.0)
+        print_status("Takeoff complete!", "success")
 
-        # Example scenario - square pattern
-        waypoints = [
-            {"x": 0, "y": 0, "z": 10},
-            {"x": 10, "y": 0, "z": 10},
-            {"x": 10, "y": 10, "z": 10},
-            {"x": 0, "y": 10, "z": 10},
-            {"x": 0, "y": 0, "z": 10},
-        ]
-
-        episode_id, episode_path, num_frames = await agent.run_scenario(waypoints)
+        # Run scenario
+        print("")
+        print_status(f"Running scenario ({len(waypoints)} waypoints)...", "progress")
+        episode_id, episode_path, num_frames = await agent.run_scenario(waypoints, duration)
+        print_status(f"Collected {num_frames} frames", "success")
 
         # Upload to Supabase if configured
-        if run_id and scenario_id:
+        if agent.supabase and run_id and scenario_id:
+            print("")
+            print_status("Uploading episode metadata...", "progress")
             await agent.upload_episode(run_id, scenario_id, episode_path, num_frames)
+            print_status("Upload complete!", "success")
+
+            # Update run status - collection complete, ready for training
+            update_run_status(agent.supabase, run_id, "training", 0.33, "training")
 
         # Land
+        print("")
+        print_status("Landing...", "progress")
         await agent.land()
+        print_status("Landed safely!", "success")
+
+        print("")
+        print("=" * 60)
+        print("  DATA COLLECTION COMPLETE")
+        print(f"  Episode: {episode_id}")
+        print(f"  Frames: {num_frames}")
+        print(f"  Saved to: {episode_path}")
+        print("=" * 60)
+        print("")
 
     except KeyboardInterrupt:
-        print("Interrupted")
+        print("")
+        print_status("Interrupted by user", "error")
+        if agent.supabase and run_id:
+            update_run_status(agent.supabase, run_id, "failed", 0, "collecting")
+    except Exception as e:
+        print("")
+        print_status(f"Error: {e}", "error")
+        if agent.supabase and run_id:
+            update_run_status(agent.supabase, run_id, "failed", 0, "collecting")
+        raise
     finally:
         if agent.drone:
-            await agent.drone.action.land()
+            try:
+                await agent.drone.action.land()
+            except:
+                pass
 
 
 if __name__ == "__main__":

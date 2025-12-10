@@ -1,29 +1,78 @@
 version: '3.8'
 
+# Commlink Simulation Environment
+#
+# Usage:
+#   First time setup (downloads ~2GB, takes 10-20 min):
+#     ./setup-sim.sh
+#
+#   Run simulation:
+#     docker-compose up
+#
+#   Run headless (no GUI, faster):
+#     docker-compose --profile headless up
+
 services:
-  # PX4 SITL Simulator
-  px4-sitl:
+  # PX4 SITL with Gazebo (full simulation with GUI)
+  px4-gazebo:
     image: px4io/px4-dev-simulation-focal:latest
-    container_name: px4-sitl
+    container_name: px4-gazebo
+    profiles: ["gazebo", "default"]
     environment:
       - DISPLAY=${DISPLAY:-:0}
-      - PX4_HOME=/root/PX4-Autopilot
       - PX4_SIM_MODEL=iris
+      - PX4_SIM_SPEED_FACTOR=1
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - px4-data:/root/PX4-Autopilot
+      - px4-src:/src/PX4-Autopilot
+      - ./worlds:/src/worlds:ro
     ports:
-      - "14540:14540/udp"  # MAVSDK
-      - "14550:14550/udp"  # QGroundControl
-      - "18570:18570/udp"  # Gazebo
+      - "14540:14540/udp"   # MAVSDK/MAVLink
+      - "14550:14550/udp"   # QGroundControl
+      - "18570:18570/udp"   # Gazebo
     networks:
       - sim-network
+    working_dir: /src/PX4-Autopilot
     command: >
       bash -c "
-        cd /root/PX4-Autopilot &&
+        if [ ! -f /src/PX4-Autopilot/build/px4_sitl_default/bin/px4 ]; then
+          echo '❌ PX4 not built. Run ./setup-sim.sh first'
+          exit 1
+        fi
+        echo '🚀 Starting PX4 SITL + Gazebo...'
         make px4_sitl gazebo
       "
     privileged: true
+    stdin_open: true
+    tty: true
+
+  # PX4 SITL with jMAVSim (headless, lightweight)
+  px4-jmavsim:
+    image: px4io/px4-dev-simulation-focal:latest
+    container_name: px4-jmavsim
+    profiles: ["headless"]
+    environment:
+      - HEADLESS=1
+      - PX4_SIM_SPEED_FACTOR=${SIM_SPEED:-1}
+    volumes:
+      - px4-src:/src/PX4-Autopilot
+    ports:
+      - "14540:14540/udp"
+      - "14550:14550/udp"
+    networks:
+      - sim-network
+    working_dir: /src/PX4-Autopilot
+    command: >
+      bash -c "
+        if [ ! -f /src/PX4-Autopilot/build/px4_sitl_default/bin/px4 ]; then
+          echo '❌ PX4 not built. Run ./setup-sim.sh first'
+          exit 1
+        fi
+        echo '🚀 Starting PX4 SITL + jMAVSim (headless)...'
+        make px4_sitl jmavsim
+      "
+    stdin_open: true
+    tty: true
 
   # MAVLink Agent (data collection)
   agent:
@@ -32,9 +81,9 @@ services:
       dockerfile: Dockerfile
     container_name: mavlink-agent
     environment:
-      - SUPABASE_URL=${SUPABASE_URL}
-      - SUPABASE_KEY=${SUPABASE_KEY}
-      - PX4_CONNECTION=udp://:14540
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_KEY=${SUPABASE_KEY:-}
+      - PX4_CONNECTION=udp://px4-gazebo:14540
       - RUN_ID=${RUN_ID:-}
       - SCENARIO_ID=${SCENARIO_ID:-}
     volumes:
@@ -43,12 +92,20 @@ services:
     networks:
       - sim-network
     depends_on:
-      - px4-sitl
-    command: python3 agent.py
+      - px4-gazebo
+    profiles: ["with-agent"]
+    command: >
+      bash -c "
+        echo '⏳ Waiting for PX4 to start...'
+        sleep 15
+        echo '🤖 Starting data collection agent...'
+        python3 agent.py
+      "
 
 networks:
   sim-network:
     driver: bridge
 
 volumes:
-  px4-data:
+  px4-src:
+    name: commlink-px4-source
