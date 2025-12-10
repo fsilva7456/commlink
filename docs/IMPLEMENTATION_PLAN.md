@@ -226,27 +226,146 @@ drone/
 │   └── mid_planner.py   # Translates subgoals to waypoints
 ```
 
-**Mid-Level Planner design:**
-```python
-class MidLevelPlanner:
-    """Converts high-level subgoals to waypoints."""
+**Supported Subgoals:**
 
-    def plan_waypoint(
-        self,
-        subgoal: str,           # "approach_target"
-        target: DetectedObject,  # Red sphere at (10, 5, 2)
-        drone_state: DroneState,
-        constraints: dict
-    ) -> Waypoint:
-        """Generate next waypoint to achieve subgoal."""
+| Subgoal | Meaning | Exit Condition |
+|---------|---------|----------------|
+| `search` | Scan area to find target | Target detected → `approach` |
+| `approach` | Move toward detected target | Arc complete → `track` |
+| `track` | Maintain position relative to target | Target lost → `search` |
+| `return_home` | Fly back to start | Landed |
+| `hover` | Hold current position | LLM provides new subgoal |
 
-        if subgoal == "search_area":
-            return self._search_pattern(drone_state)
-        elif subgoal == "approach_target":
-            return self._approach(target, drone_state)
-        elif subgoal == "maintain_tracking":
-            return self._tracking_position(target, drone_state)
+---
+
+**Subgoal: `search`**
+Pattern: Expanding square with intermittent 360° sector scans
+
 ```
+Parameters:
+  - search_bounds: extracted from objective by LLM (e.g., "north field" → bbox)
+  - square_size_initial: 10m
+  - square_expansion: 10m per loop
+  - scan_interval: every 2nd waypoint (at corners)
+  - scan_rotation: 360° in 4 steps (90° each)
+  - altitude: 15m (configurable)
+
+Behavior:
+  1. Fly to corner of current square
+  2. At corner: perform 360° sector scan (hover + rotate)
+  3. Fly to next corner
+  4. Fly to next corner (no scan)
+  5. Continue until square complete
+  6. Expand square by 10m, repeat
+  7. If bounds exceeded, restart from center with offset
+
+Waypoint sequence (10m square):
+     2←───────1 (scan)
+     │        ↑
+     ↓        │
+     3───────→4 (scan)
+```
+
+---
+
+**Subgoal: `approach`**
+Pattern: Fast approach with 180° arc maneuver for sensor sweep
+
+```
+Parameters:
+  - target_position: from perception
+  - approach_speed: 5 m/s (fast)
+  - arc_radius: 15m from target
+  - arc_sweep: 180° around target
+  - arc_speed: 2 m/s (slower for readings)
+  - final_distance: 10m
+
+Behavior:
+  1. Calculate direct path to arc start point
+  2. Fly fast (5 m/s) toward arc entry
+  3. Enter arc: fly 180° around target at 15m radius
+     - Camera pointed at target throughout
+     - Collect sensor readings for 3D understanding
+  4. Exit arc at optimal tracking position
+
+Path visualization:
+  Drone ────→ Arc entry
+                  ╭─────╮
+                 ╱       ╲
+                │ TARGET  │
+                 ╲       ╱
+                  ╰──○──╯ Final position
+```
+
+---
+
+**Subgoal: `track`**
+Pattern: Station keep at fixed offset
+
+```
+Parameters:
+  - offset_vector: [-8m, 0, 6m] relative to target
+    (8m behind, 0 lateral, 6m above)
+  - tracking_tolerance: 2m
+  - follow_speed: 2 m/s
+
+Behavior:
+  1. Calculate desired = target_position + offset_vector
+  2. If distance to desired > tolerance:
+     - Generate waypoint to desired position
+  3. If target moves: smooth follow
+  4. Maintain camera lock on target
+
+Exit conditions:
+  - Target lost > 3 seconds → `search`
+  - Success criteria met → mission complete
+  - Battery low → `return_home`
+```
+
+---
+
+**Subgoal: `return_home`**
+Pattern: Direct path to start
+
+```
+Parameters:
+  - home_position: scenario start
+  - return_speed: 4 m/s
+  - safe_altitude: 20m
+
+Behavior:
+  1. Ascend to safe altitude
+  2. Fly direct to home at return_speed
+  3. Descend and land
+```
+
+---
+
+**Subgoal: `hover`**
+Pattern: Hold position
+
+```
+Parameters:
+  - position: current
+  - timeout: 30 seconds
+
+Behavior:
+  1. Maintain position ± 0.5m
+  2. Continue sensor readings
+  3. Wait for LLM decision
+```
+
+---
+
+**Speed Summary:**
+
+| Subgoal | Speed | Pattern |
+|---------|-------|---------|
+| `search` | 3 m/s | Expanding square + scans |
+| `approach` | 5→2 m/s | Direct + 180° arc |
+| `track` | 2 m/s | Station keep |
+| `return_home` | 4 m/s | Direct to start |
+| `hover` | 0 | Hold position |
 
 #### 4.2 MPC Controller (World Model Integration)
 
